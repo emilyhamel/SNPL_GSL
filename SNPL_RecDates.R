@@ -1,23 +1,25 @@
 #..............................................................................#      
 #........ Snowy Plover Recreation Survey Sampling Windows Generator ...........#
 #
-# For 2 sites, May 15-August 31, accounting for weekends, holidays, and multi-day music festivals 
+# For 2 sites, May 21-August 31, with one time slot per survey type per site per day
+# Ensuring no time overlap between surveys
 #..............................................................................#
 
 library(lubridate)
 library(dplyr)
 library(tidyr)
 
-# Set working directory 
-# *NOTE* (Change WD per individual user. Directory specified is the folder in which the output file will be saved)
+# Set working directory
 setwd("C:/Users/emily.hamel/Box/-.Emily.Hamel Individual/GSL/SNPL")
+# NOTE: working directory will need to be changed based on the user.
+# The file path identified will be where the output files will be saved.
 
 # For reproducibility
 set.seed(123)
 
 #..............................................................................#
-# Define survey period (May 15 through August 31, 2025)
-start_date <- as.Date("2025-05-15")
+# Define survey period (May 21 through August 31, 2025)
+start_date <- as.Date("2025-05-21")
 end_date <- as.Date("2025-08-31")
 
 # Create a data frame with all dates in the survey period
@@ -64,98 +66,119 @@ all_dates <- all_dates %>%
 # Define site names
 sites <- c("Saltair", "Kennecott")
 
-
 # Define possible sampling hours (6 AM to 6 PM, with 2-hour windows)
 # Last window starts at 6pm and ends at 8pm
-sampling_hours <- seq(6, 18, by = 2) # Starting hours for 2-hour windows
+sampling_hours <- seq(6, 18, by = 1) # All possible starting hours from 6AM to 6PM
 
 #..............................................................................#
-# Function to generate sampling windows with stratified approach
-generate_sampling_windows <- function(dates_df, site_names, hours, num_samples_per_stratum = 3) {
-  # Empty data frame to store results
-  results <- data.frame(
-    site = character(),
-    date = character(),
-    raw_date = as.Date(character()),  # Add raw date for sorting
-    day = character(),
-    month = character(),
-    day_type = character(),
-    start_time = character(),
-    end_time = character(),
-    stringsAsFactors = FALSE
-  )
+# Helper function to parse time strings to numeric hours
+parse_time_to_hour <- function(time_str) {
+  hour_num <- 0
+  if (grepl("AM", time_str)) {
+    hour_num <- as.numeric(sub(":00 AM", "", time_str))
+    if (hour_num == 12) hour_num <- 0
+  } else {
+    hour_num <- as.numeric(sub(":00 PM", "", time_str))
+    if (hour_num != 12) hour_num <- hour_num + 12
+  }
+  return(hour_num)
+}
+
+# Helper function to format hours to time strings
+format_hour_to_time <- function(hour) {
+  if (hour < 12) {
+    return(paste0(hour, ":00 AM"))
+  } else if (hour == 12) {
+    return("12:00 PM")
+  } else {
+    return(paste0(hour - 12, ":00 PM"))
+  }
+}
+
+#..............................................................................#
+generate_non_overlapping_surveys <- function(dates_df, site_names, 
+                                             num_dates_per_stratum = 8) {
   
-  # For each site
-  for (site in site_names) {
+  # Create empty data frames for both surveys
+  observational_results <- data.frame()
+  intercept_results <- data.frame()
+  
+  # Process each month
+  for (m in unique(dates_df$month)) {
+    month_dates <- subset(dates_df, month == m)
     
-    # For each month
-    for (m in unique(dates_df$month)) {
+    # Process each day type within the month
+    for (day_t in unique(month_dates$day_type)) {
+      stratum_dates <- subset(month_dates, day_type == day_t)
       
-      month_dates <- subset(dates_df, month == m)
+      # Skip if no dates in this stratum
+      if (nrow(stratum_dates) == 0) next
       
-      # For each day type (Weekday, Weekend, Holiday, Festival)
-      for (day_t in unique(month_dates$day_type)) {
-        
-        # Get dates for this stratum
-        stratum_dates <- subset(month_dates, day_type == day_t)
-        
-        # Skip if no dates in this stratum
-        if (nrow(stratum_dates) == 0) next
-        
-        # Determine number of samples for this stratum
-        n_samples <- num_samples_per_stratum
-        
+      # Determine number of dates to sample based on day type
+      # Increased sampling for better coverage
+      if (day_t == "Weekday") {
+        n_dates <- ceiling(num_dates_per_stratum * 1.5)  # More weekdays
+      } else if (day_t == "Weekend") {
+        n_dates <- num_dates_per_stratum  # Standard number for weekends
+      } else {
         # For festivals and holidays, use all dates
-        if (day_t == "Festival" || day_t == "Holiday") {
-          n_samples <- nrow(stratum_dates)
+        n_dates <- nrow(stratum_dates)
+      }
+      
+      # Ensure we don't try to sample more than available
+      n_dates <- min(n_dates, nrow(stratum_dates))
+      
+      if (n_dates == 0) next
+      
+      # Sample dates from the stratum
+      sampled_indices <- sample(1:nrow(stratum_dates), n_dates, replace = FALSE)
+      
+      # For each sampled date
+      for (idx in sampled_indices) {
+        date_row <- stratum_dates[idx, ]
+        d <- date_row$date
+        
+        # Get available hours for the entire day
+        available_hours <- sampling_hours
+        
+        # Make sure there are enough available hours to choose 4 non-overlapping 2-hour windows
+        # (1 window per survey type per site)
+        if (length(available_hours) < 4) {
+          warning(paste("Not enough hours for", d, "- Need at least 4 hours"))
+          next
         }
         
-        # Ensure we don't try to sample more than available
-        n_samples <- min(n_samples, nrow(stratum_dates))
+        # Randomly select 4 unique start hours (for 4 total time slots)
+        selected_hours <- sample(available_hours, 4, replace = FALSE)
         
-        if (n_samples == 0) next
+        # Assign hours to site/survey combinations (1 slot per site per survey type)
+        assignments <- data.frame(
+          site = rep(site_names, each = 2),
+          survey = rep(c("Observational", "Intercept"), times = 2),
+          stringsAsFactors = FALSE
+        )
         
-        # Sample dates from the stratum (if possible)
-        sampled_indices <- sample(1:nrow(stratum_dates), n_samples, replace = FALSE)
+        # Randomly assign the 4 selected hours to the 4 site/survey combinations
+        assignments$start_hour <- sample(selected_hours, 4, replace = FALSE)
         
-        # For each sampled date, select a random starting hour
-        for (idx in sampled_indices) {
-          date_row <- stratum_dates[idx, ]
-          d <- date_row$date
-          
-          start_hour <- sample(hours, 1)
+        # For each assignment, generate the survey entry
+        for (i in 1:nrow(assignments)) {
+          this_site <- assignments$site[i]
+          this_survey <- assignments$survey[i]
+          start_hour <- assignments$start_hour[i]
           end_hour <- start_hour + 2
           
-          # Format the date string
-          month_str <- months(d)
-          day_num <- day(d)
-          year_num <- year(d)
+          # Format date and time
+          date_str <- format(d, "%B %d %Y")
           weekday <- weekdays(d)
+          start_ampm <- format_hour_to_time(start_hour)
+          end_ampm <- format_hour_to_time(end_hour)
           
-          date_str <- paste(month_str, day_num, year_num, sep = " ")
-          
-          # Format times with AM/PM
-          start_ampm <- if (start_hour < 12) {
-            paste0(start_hour, ":00 AM")
-          } else if (start_hour == 12) {
-            "12:00 PM"
-          } else {
-            paste0(start_hour - 12, ":00 PM")
-          }
-          
-          end_ampm <- if (end_hour < 12) {
-            paste0(end_hour, ":00 AM")
-          } else if (end_hour == 12) {
-            "12:00 PM"
-          } else {
-            paste0(end_hour - 12, ":00 PM")
-          }
-          
-          # Add to results
           new_row <- data.frame(
-            site = site,
+            survey = this_survey,
+            site = this_site,
             date = date_str,
-            raw_date = d,  # Add raw date for sorting
+            raw_date = d,
             day = weekday,
             month = as.character(date_row$month_name),
             day_type = day_t,
@@ -164,49 +187,139 @@ generate_sampling_windows <- function(dates_df, site_names, hours, num_samples_p
             stringsAsFactors = FALSE
           )
           
-          results <- rbind(results, new_row)
+          # Add to correct results frame
+          if (this_survey == "Observational") {
+            observational_results <- rbind(observational_results, new_row)
+          } else {
+            intercept_results <- rbind(intercept_results, new_row)
+          }
         }
       }
     }
   }
   
-  # Sort by site, date, and start time
-  results <- results[order(results$site, results$raw_date), ]
+  # Combine the results from both surveys
+  combined_results <- rbind(observational_results, intercept_results)
   
-  # Remove the raw_date column used for sorting
-  results$raw_date <- NULL
+  # Sort by date, site, and start time
+  combined_results <- combined_results %>%
+    mutate(
+      sort_date = as.Date(raw_date),
+      sort_hour = sapply(start_time, parse_time_to_hour)
+    ) %>%
+    arrange(sort_date, site, sort_hour, survey) %>%
+    select(-sort_date, -sort_hour)
   
-  return(results)
+  return(list(
+    combined = combined_results,
+    observational = observational_results,
+    intercept = intercept_results
+  ))
 }
 
 #..............................................................................#
-# Generate sampling windows
-sampling_schedule <- generate_sampling_windows(
+# Generate both surveys with guaranteed non-overlapping time slots
+# Increased the number of samples per stratum for better coverage
+survey_results <- generate_non_overlapping_surveys(
   all_dates,
   sites,
-  sampling_hours,
-  num_samples_per_stratum = 3  # 3 samples per month per day type (weekday/weekend) per site
+  num_dates_per_stratum = 8  # Increased from 6 to ensure better coverage
 )
 
-# Reorder columns
-sampling_schedule <- sampling_schedule[, c("site", "date", "day", "month", "day_type", "start_time", "end_time")]
+# Extract the results
+combined_schedule <- survey_results$combined
+observational_schedule <- survey_results$observational
+intercept_schedule <- survey_results$intercept
 
 #..............................................................................#
-# Print summary statistics using dplyr
-summary_stats <- sampling_schedule %>%
-  group_by(site, month, day_type) %>%
-  summarise(count = n(), .groups = "drop")
+# Comprehensive verification checks
 
+# Check for overlapping time slots between the two survey types
+cat("\n Verifying no overlaps between survey types... \n")
+verification_df <- combined_schedule %>%
+  select(survey, site, raw_date, start_time) %>%
+  mutate(hour = sapply(start_time, parse_time_to_hour))
 
-cat("Summary of sampling schedule:\n")
-print(summary_stats)
+overlap_test <- verification_df %>%
+  group_by(site, raw_date, hour) %>%
+  summarise(count = n(), surveys = paste(unique(survey), collapse = ", "), .groups = "drop") %>%
+  filter(count > 1)
 
+if(nrow(overlap_test) > 0) {
+  cat("ERROR: Found overlapping time slots between surveys\n")
+  print(overlap_test)
+} else {
+  cat("No overlapping time slots found between surveys.\n")
+}
 
-cat("\nDetailed sampling schedule:\n")
-print(sampling_schedule)
+# Check for exactly 1 slot per day per site for each survey type
+cat("\n Verifying slot counts...\n")
+slots_per_day_site_survey <- combined_schedule %>%
+  group_by(survey, site, raw_date) %>%
+  summarise(slot_count = n(), .groups = "drop") %>%
+  filter(slot_count != 1)
+
+if(nrow(slots_per_day_site_survey) > 0) {
+  cat("ERROR: Some combinations do not have exactly 1 slot:\n")
+  print(slots_per_day_site_survey)
+} else {
+  cat("Each survey has exactly 1 slot per day per site.\n")
+}
+
+# Verify total slots per day is 4 (1 per survey type per site)
+cat("\n Verifying total daily slots... \n")
+total_slots_per_day <- combined_schedule %>%
+  group_by(raw_date) %>%
+  summarise(total_slots = n(), .groups = "drop") %>%
+  filter(total_slots != 4)
+
+if(nrow(total_slots_per_day) > 0) {
+  cat("ERROR: Some days do not have exactly 4 total slots:\n")
+  print(total_slots_per_day)
+} else {
+  cat("Each day has exactly 4 total slots (2 per site, 1 per survey type per site).\n")
+}
+
+# Check distribution of survey times across the day
+cat("\n Analyzing time distribution... \n")
+time_distribution <- combined_schedule %>%
+  mutate(hour = sapply(start_time, parse_time_to_hour)) %>%
+  group_by(survey, hour) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(survey, hour)
+
+cat("Time distribution across the day:\n")
+print(time_distribution)
+
+# Check stratification results
+cat("\n Stratification summary... \n")
+strat_summary <- combined_schedule %>%
+  group_by(survey, month, day_type) %>%
+  summarise(
+    unique_dates = n_distinct(raw_date),
+    total_slots = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(survey, month, day_type)
+
+cat("Stratification results by month and day type:\n")
+print(strat_summary)
+
+# Overall summary of coverage
+cat("\n Overall sampling coverage... \n")
+total_unique_days <- n_distinct(combined_schedule$raw_date)
+total_days_in_period <- as.integer(end_date - start_date) + 1
+coverage_percentage <- round((total_unique_days / total_days_in_period) * 100, 1)
+
+cat("Total unique days sampled:", total_unique_days, "out of", total_days_in_period, 
+    "days in the survey period (", coverage_percentage, "% coverage)\n", sep="")
 
 #..............................................................................#
 # Write to CSV
-write.csv(sampling_schedule, "recreation_survey_sampling_schedule.csv", row.names = FALSE)
+write.csv(combined_schedule, "recreation_survey_sampling_schedule.csv", row.names = FALSE)
+
+# Write separate CSVs for each survey
+write.csv(observational_schedule, "recreation_Observational_sampling_schedule.csv", row.names = FALSE)
+write.csv(intercept_schedule, "recreation_Intercept_sampling_schedule.csv", row.names = FALSE)
 
 #..............................................................................#
